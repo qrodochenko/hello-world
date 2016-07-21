@@ -3,6 +3,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <iostream>
+#include "pnl_fft.h"
 
 #define SQR(X) (X*X)
 #define MAX(A,B) ( (A) > (B) ? (A):(B))
@@ -19,6 +20,8 @@ static int **y_down, **y_up;
 static double **pu_y, **pd_y;
 static double **pu_f, **pd_f;
 static double ***S, ***F;
+static double *ba_log_prices; /*basic asset price line, of length M*/
+static double * fftfreqs; /*fft frequencies*/
 /*Memory allocation*/
 static int memory_allocation(uint Nt, uint N, uint M)
 {
@@ -102,6 +105,18 @@ static int memory_allocation(uint Nt, uint N, uint M)
 		}
 	}
 	return OK;
+
+	ba_log_prices = (double *)calloc(M, sizeof(double));
+	if (ba_log_prices == NULL)
+	{
+		return MEMORY_ALLOCATION_FAILURE;
+	}
+
+	fftfreqs = (double *)calloc(M, sizeof(double));
+	if (fftfreqs == NULL)
+	{
+		return MEMORY_ALLOCATION_FAILURE;
+	}
 }
 
 static void free_memory(uint Nt, uint N, uint M)
@@ -145,6 +160,7 @@ static void free_memory(uint Nt, uint N, uint M)
 	}
 	free(S);
 
+	free(ba_log_prices);
 	return;
 }
 
@@ -177,8 +193,8 @@ static double compute_S(double Y, double rv, double omega, double rho)
 static int tree_v(double tt, double v0, double kappa, double theta, double omega, int Nt)
 {
 	int i, j;
-	int z;
-	double Ru, Rd;
+	int z; /*a variable for k_u or k_d, to add to k on n+1 step*/
+	double Ru, Rd; /*stores k_u(n,k) and k_d(n,k), respectively*/
 	double mu_r, v_curr;
 	double dt, sqrt_dt;
 
@@ -255,8 +271,68 @@ static int tree_v(double tt, double v0, double kappa, double theta, double omega
 	return 1;
 }
 
-static int initials(double tt, uint M, uint Nt) /*fill matrices with initial conditions and creates basic arrays*/
+static int fftfreq(uint n, double d) 
 {
+	/*
+	Return the Discrete Fourier Transform sample frequencies as in fftfreq in numpy
+	*/
+	double val = 1.0 / (n * d);
+	uint N = (n - 1) / 2 + 1;
+	int i = 0;
+	for (i = 0; i < n-1; i++)
+	{
+		fftfreqs[i] = val * i;
+	}
+	for (i = n-1; i < n; i++)
+	{
+		fftfreqs[i] = val * (-(n / 2) + i);
+	}
+	return 1;
+}
+
+static int compute_price(double tt, double H, double K, double r_premia, double v0, double kappa, double theta, double sigma, double rho, 
+	double L, uint M, uint Nt) /*fill matrices with initial conditions and creates basic arrays*/
+{
+	/*Variables*/
+	uint i, j, n, k;
+	double r; /*continuous rate*/
+	double min_log_price, max_log_price;
+	double ds, dt; /*price and time discretization steps*/
+	double rho_hat; /*parameter after substitution*/
+	double q, factor; /*pde parameters*/
+
+	if (2.0 * kappa * theta < pow(sigma, 2))
+		return 1; /*Novikov condition not satisfied*/
+	/*Body*/
+	r = log(1 + r_premia / 100);
+	/*spacial variable. Price space construction*/
+	min_log_price = L * log(0.5);
+	max_log_price = L * log(2.0);
+	ds = (max_log_price - min_log_price) / double(M);
+	
+	for (j = 1; j < M; j++)
+	{
+		ba_log_prices[j] = min_log_price + j*ds;
+	}
+	dt = tt / double(Nt);
+
+	/*building voltree*/
+	tree_v(tt, v0, kappa, theta, sigma, Nt);
+	
+	/*fft frequences we'll need in every vertice of a tree*/
+	fftfreq(M, ds);
+	rho_hat = sqrt(1.0 - pow(rho, 2.0));
+	q = 1.0 / dt + r;
+	factor = pow(q*dt, -1.0);
+
+	/*filling F matrice by initial (in time T) conditions*/
+	for (j = 0; j < M; j++)
+		for (n = 0; n < Nt + k; n++)
+			for (k = 0; k < Nt + 1; k++)
+			{
+				if
+				F[j][n][k] = 0;
+			}
 
 	return OK;
 }
@@ -273,7 +349,7 @@ int main()
 	double kappa = 2.0; /*heston parameter, mean reversion*/
 	double theta = 0.1; /*heston parameter, long-run variance*/
 	double sigma = 0.2; /*heston parameter, volatility of variance*/
-	double omega = sigma; /*sigma is used everywhere, omega - in variance tree*/
+	double omega = sigma; /*sigma is used everywhere, omega - in the variance tree*/
 	double rho = 0.5; /*heston parameter, correlation*/
 	/*method parameters*/
 	uint Nt = 100; /*number of time steps*/
